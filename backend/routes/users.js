@@ -5,33 +5,9 @@ import Message from '../models/Message.js';
 import SupportArchive from '../models/SupportArchive.js';
 import { auth } from '../middleware/auth.js';
 import { createNotification } from './notifications.js';
-import multer from 'multer';
-import path from 'path';
-import fs from 'fs';
+import { uploadAvatar, cloudinary } from '../config/cloudinary.js';
 
 const router = express.Router();
-
-// Ensure upload directory exists
-const UPLOAD_DIR = './uploads';
-if (!fs.existsSync(UPLOAD_DIR)) {
-  fs.mkdirSync(UPLOAD_DIR, { recursive: true });
-}
-
-// Configure Multer storage for avatars
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, UPLOAD_DIR);
-  },
-  filename: (req, file, cb) => {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
-    cb(null, 'avatar-' + uniqueSuffix + path.extname(file.originalname));
-  }
-});
-
-const upload = multer({ 
-  storage,
-  limits: { fileSize: 5 * 1024 * 1024 } // 5MB limit
-});
 
 
 // @route   GET /api/users/investors
@@ -74,17 +50,30 @@ router.get('/profile/:id', auth, async (req, res) => {
 });
 
 // @route   POST /api/users/avatar
-// @desc    Upload avatar file
-router.post('/avatar', auth, upload.single('avatar'), async (req, res) => {
+// @desc    Upload avatar file (stored on Cloudinary)
+router.post('/avatar', auth, uploadAvatar.single('avatar'), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ message: 'No file uploaded' });
     }
-    const avatarUrl = `/uploads/${req.file.filename}`;
-    
-    // Update the database field directly
-    await User.findByIdAndUpdate(req.user._id, { $set: { avatarUrl } });
-    
+
+    // Cloudinary permanent URL
+    const avatarUrl       = req.file.path;
+    const avatarPublicId  = req.file.filename; // public_id for future deletion
+
+    // Delete old avatar from Cloudinary (if one exists)
+    const existingUser = await User.findById(req.user._id);
+    if (existingUser?.avatarPublicId) {
+      try {
+        await cloudinary.uploader.destroy(existingUser.avatarPublicId);
+      } catch (e) {
+        console.warn('Old avatar delete warning:', e.message);
+      }
+    }
+
+    // Update DB
+    await User.findByIdAndUpdate(req.user._id, { $set: { avatarUrl, avatarPublicId } });
+
     res.json({ avatarUrl });
   } catch (error) {
     console.error('Avatar upload error:', error);

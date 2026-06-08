@@ -6,6 +6,7 @@ const userSchema = new mongoose.Schema({
   password: { type: String, required: true },
   role: { type: String, enum: ['entrepreneur', 'investor', 'admin'], required: true },
   avatarUrl: { type: String },
+  avatarPublicId: { type: String }, // Cloudinary public_id for deletion
   bio: { type: String, default: '' },
   isOnline: { type: Boolean, default: false },
   walletBalance: { type: Number, default: 0 },

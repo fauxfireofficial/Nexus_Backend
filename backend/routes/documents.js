@@ -1,33 +1,12 @@
 import express from 'express';
-import multer from 'multer';
 import path from 'path';
-import fs from 'fs';
 import Document from '../models/Document.js';
 import { auth } from '../middleware/auth.js';
+import { upload, cloudinary } from '../config/cloudinary.js';
 
 const router = express.Router();
 
-// Ensure upload directory exists
-const UPLOAD_DIR = './uploads';
-if (!fs.existsSync(UPLOAD_DIR)) {
-  fs.mkdirSync(UPLOAD_DIR, { recursive: true });
-}
 
-// Configure Multer storage
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, UPLOAD_DIR);
-  },
-  filename: (req, file, cb) => {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
-    cb(null, uniqueSuffix + '-' + file.originalname);
-  }
-});
-
-const upload = multer({ 
-  storage,
-  limits: { fileSize: 100 * 1024 * 1024 } // 100MB limit (supports video uploads)
-});
 
 // Helper for formatting file size
 const formatBytes = (bytes, decimals = 1) => {
@@ -40,7 +19,7 @@ const formatBytes = (bytes, decimals = 1) => {
 };
 
 // @route   POST /api/documents/upload
-// @desc    Upload a new document
+// @desc    Upload a new document (stored on Cloudinary)
 router.post('/upload', auth, upload.single('document'), async (req, res) => {
   try {
     if (!req.file) {
@@ -50,14 +29,16 @@ router.post('/upload', auth, upload.single('document'), async (req, res) => {
     const docName = req.file.originalname;
     const docSize = formatBytes(req.file.size);
     const docType = path.extname(docName).replace('.', '').toUpperCase();
-    const docUrl = `/uploads/${req.file.filename}`;
+    // Cloudinary returns the permanent URL in req.file.path
+    const docUrl        = req.file.path;
+    const cloudinaryId  = req.file.filename; // public_id for future deletion
 
     const newDoc = new Document({
       name: docName,
       type: docType,
       size: docSize,
       url: docUrl,
-      path: req.file.path,
+      path: cloudinaryId,   // store public_id so we can delete from Cloudinary later
       ownerId: req.user.id,
       shared: false
     });
@@ -71,24 +52,15 @@ router.post('/upload', auth, upload.single('document'), async (req, res) => {
 });
 
 // @route   GET /api/documents/download/:filename
-// @desc    Download a file with its original filename (or a custom query filename)
-router.get('/download/:filename', (req, res) => {
+// @desc    Redirect to Cloudinary URL for download (files now hosted on Cloudinary)
+router.get('/download/:filename', auth, async (req, res) => {
   try {
-    const filename = req.params.filename;
-    const filePath = path.join('./uploads', filename);
-
-    if (!fs.existsSync(filePath)) {
+    const doc = await Document.findOne({ name: req.params.filename });
+    if (!doc) {
       return res.status(404).json({ message: 'File not found' });
     }
-
-    // Use custom name from query parameter if provided, otherwise extract original name
-    let downloadName = req.query.name;
-    if (!downloadName) {
-      const match = filename.match(/^\d+-\d+-(.+)$/);
-      downloadName = match ? match[1] : filename;
-    }
-
-    res.download(filePath, downloadName);
+    // Cloudinary URL is stored in doc.url — redirect client there
+    res.redirect(doc.url);
   } catch (error) {
     console.error('Download error:', error);
     res.status(500).json({ message: 'Server error downloading file' });
@@ -173,7 +145,7 @@ router.post('/sign/:id', auth, async (req, res) => {
 });
 
 // @route   DELETE /api/documents/:id
-// @desc    Delete a document
+// @desc    Delete a document (removes from Cloudinary + DB)
 router.delete('/:id', auth, async (req, res) => {
   try {
     const doc = await Document.findById(req.params.id);
@@ -186,9 +158,13 @@ router.delete('/:id', auth, async (req, res) => {
       return res.status(401).json({ message: 'Not authorized to delete this document' });
     }
 
-    // Delete local file from disk
-    if (fs.existsSync(doc.path)) {
-      fs.unlinkSync(doc.path);
+    // Delete from Cloudinary using stored public_id
+    if (doc.path) {
+      try {
+        await cloudinary.uploader.destroy(doc.path, { resource_type: 'auto' });
+      } catch (cloudErr) {
+        console.warn('Cloudinary delete warning:', cloudErr.message);
+      }
     }
 
     // Delete record from DB
