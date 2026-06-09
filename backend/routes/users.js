@@ -1,4 +1,5 @@
 import express from 'express';
+import mongoose from 'mongoose';
 import User from '../models/User.js';
 import CollaborationRequest from '../models/CollaborationRequest.js';
 import Message from '../models/Message.js';
@@ -38,6 +39,9 @@ router.get('/entrepreneurs', auth, async (req, res) => {
 // @desc    Get profile by user id
 router.get('/profile/:id', auth, async (req, res) => {
   try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ message: 'Invalid User ID format' });
+    }
     const profile = await User.findById(req.params.id);
     if (!profile) {
       return res.status(404).json({ message: 'Profile not found' });
