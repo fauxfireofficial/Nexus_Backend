@@ -92,8 +92,8 @@ router.post('/register', async (req, res) => {
     
     const isTestEmail = email && email.endsWith('@nexus.io');
 
-    // Create new user (unverified by default, unless test email)
-    user = new User({
+    // Create temporary unverified user state (NOT SAVED TO DB YET)
+    const newUserParams = {
       name,
       email,
       password: hashedPassword,
@@ -101,13 +101,13 @@ router.post('/register', async (req, res) => {
       avatarUrl: `https://ui-avatars.com/api/?name=${encodeURIComponent(name)}&background=random`,
       isOnline: isTestEmail,
       isVerified: isTestEmail,
-      verificationCode: isTestEmail ? null : otp,
       walletBalance: role === 'investor' ? 100000 : 0
-    });
+    };
 
-    await user.save();
-    
     if (isTestEmail) {
+      // Test emails bypass OTP and save directly
+      const user = new User(newUserParams);
+      await user.save();
       const token = jwt.sign(
         { id: user.id },
         process.env.JWT_SECRET || 'nexus_super_secret_key_123',
@@ -119,10 +119,17 @@ router.post('/register', async (req, res) => {
     // Send email with OTP code
     await sendVerificationEmail(email, otp);
 
-    res.status(201).json({ 
+    // Sign all user data + OTP into a temporary token (valid for 15 mins)
+    const tempToken = jwt.sign(
+      { ...newUserParams, otp },
+      process.env.JWT_SECRET || 'nexus_super_secret_key_123',
+      { expiresIn: '15m' }
+    );
+
+    res.status(200).json({ 
       requiresVerification: true, 
-      userId: user.id, 
-      email: user.email, 
+      tempToken, 
+      email, 
       message: 'Verification OTP sent to your email.' 
     });
   } catch (error) {
@@ -134,22 +141,42 @@ router.post('/register', async (req, res) => {
 // @route   POST /api/auth/verify-email
 // @desc    Verify email address using registration OTP code
 router.post('/verify-email', async (req, res) => {
-  const { userId, code } = req.body;
+  const { tempToken, code } = req.body;
   try {
-    const user = await User.findById(userId);
-    if (!user) {
-      return res.status(404).json({ message: 'User not found' });
+    if (!tempToken || !code) {
+      return res.status(400).json({ message: 'Token and OTP code required' });
     }
-    if (user.isVerified) {
-      return res.status(400).json({ message: 'Email is already verified' });
+
+    // Decode the temporary token
+    let decoded;
+    try {
+      decoded = jwt.verify(tempToken, process.env.JWT_SECRET || 'nexus_super_secret_key_123');
+    } catch (err) {
+      return res.status(400).json({ message: 'Session expired or invalid. Please register again.' });
     }
-    if (user.verificationCode !== code) {
+
+    if (decoded.otp !== code) {
       return res.status(400).json({ message: 'Invalid verification OTP code' });
     }
     
-    user.isVerified = true;
-    user.verificationCode = null;
-    user.isOnline = true;
+    // Make sure user doesn't already exist (in case of double submission)
+    let exists = await User.findOne({ email: decoded.email });
+    if (exists) {
+      return res.status(400).json({ message: 'User already exists' });
+    }
+
+    // Now securely save the user to the Database!
+    const user = new User({
+      name: decoded.name,
+      email: decoded.email,
+      password: decoded.password, // Already hashed
+      role: decoded.role,
+      avatarUrl: decoded.avatarUrl,
+      isOnline: true,
+      isVerified: true,
+      walletBalance: decoded.walletBalance
+    });
+
     await user.save();
 
     const token = jwt.sign(
