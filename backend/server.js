@@ -17,6 +17,7 @@ import notificationRoutes from './routes/notifications.js';
 import milestoneRoutes from './routes/milestones.js';
 import adminRoutes from './routes/admin.js';
 import helpRoutes from './routes/help.js';
+import dealRoutes from './routes/deals.js';
 import User from './models/User.js';
 import bcrypt from 'bcryptjs';
 
@@ -71,6 +72,7 @@ app.use('/api/notifications', notificationRoutes);
 app.use('/api/milestones', milestoneRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/help', helpRoutes);
+app.use('/api/deals', dealRoutes);
 
 // Root route for health check
 app.get('/', (req, res) => {
